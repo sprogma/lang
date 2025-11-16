@@ -1,0 +1,79 @@
+5 = x
+6 = y
+7 = z
+
+a, b > + = f(a, b)
+x, x = d(x)
+(x > d > f) d=d f=f m(x)
+
+2x x=5 > y
+a@4, b@4 : a, b > v4i_add = f
+
+
+### a + b problem
+if c=(x > empty) 
+true=x[0] 
+false=(x[0], (x[1..] > reduce f=f) > f) |: reduce(x)
+(@(a), @(10) > builtin_mul), @(b) > builtin_add |= ssum(a, b)
+x > builtin_sub b=10 > reduce f=ssum |= to_int(x)
+
+{
+    > builtin_read > to_int *a
+    > builtin_read > to_int *b
+    @(a), @(b) > builtin_add > builtin_out
+} |: main
+
+
+@(a), @(5) > div a, r {
+    a > print
+    @(r), @(r) > add > print
+}
+
+
+### x! [factorial]
+
+# recursion
+a, b > builtin_sub(a, b) |: sub(a, b)
+a, b > builtin_mul(a, b) |: mul(a, b)
+builtin_if(c, true, false) |: if
+a, b > builtin_gt(a, b) |: gt(a, b)
+
+x, (if c=(x, 0 > gt) true=(x, 1 > sub > factorial) false=1) > mul |: factorial(x)
+
+# map
+a, b > builtin_mul(a, b) |: mul(a, b)
+x > builtin_empty(a) |: empty(x)
+
+x 8> {
+    x[0..3], x[4..8] > f
+} > reduce f=f |: reduce(x:8)
+
+if c=(x > empty) 
+true=x[0] 
+false=(x[0], (x[1..] > reduce f=f) > f) |: reduce(x)
+
+x > x |: reduce(x)
+builtin_range(1, x) > reduce f=mul |: factorial(x)
+
+
+// ?
+!builtin_reduce(x)[f]
+{
+    void *x = next(a), *y;
+    while (x && y = next(a))
+    {
+        x = f(x, y)
+    }
+    return x;
+}
+
+()goal(a, b, c, d, e, f, g, h)
+(a, b, c, f, g)zv()
+(d, e, h)zov()
+
+!goal a b c d e f g h
+(  
+ a, b, c, g, h !zv
+ \\
+ * d, e, f !zov
+)
