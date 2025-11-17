@@ -1,18 +1,18 @@
 # calculate prob that from a games, you win <=b
 
-(a, 10 > mul), b > add |: intsum[a, b]
+(a, 10 > mul), b > add |: intsum{a, b}
 
-!if cond=x[1] true=(f a=x[0] b=(x[1..] > reduce f=f)) false=x[0] |: reduce(x)[f]
+> !if cond=x[1] true=(> f a=x[0] b=(x[1..] > reduce f=f)) false=x[0] |: reduce(x){f}
 
 x > sub b=48 > reduce f=intsum |: to_int_one(x)
 x > !str_iter > !foreach f=to_int_one |: to_int(x)
-(1, a > !rand > reduce f=!sum), b > !lt |: check[a, b]
+(1, a > !rand > reduce f=!sum), b > !lt |: check{a, b}
 
 
 {
     !read > to_int >> a;
     !read > to_int >> b;
-    (range(1, 1000) > check a=a[0] b=b[0] > reduce f=!sum), @(1000) > div > !print
+    ((1, 1000 > range) > check a=a[0] b=b[0] > reduce f=!sum), 1000 > div > !print
 } |: main
 
 

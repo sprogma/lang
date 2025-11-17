@@ -6,10 +6,23 @@
 #include "string.h"
 #include "inttypes.h"
 
+static int64_t iskey(int chr);
+static int64_t skip_spaces(struct program *program, int64_t position);
+static int64_t skip_until(struct program *program, int64_t position, int symbol);
+static char *str_from_code(struct program *program, int64_t begin, int64_t end);
+static void position_to_line_col(struct program *program, int64_t pos, int64_t *line, int64_t *col);
+static struct log_item *program_log(struct program *program, enum log_source_type source, enum log_level level, char *message, struct code_span code_span, struct log_item *associated_item);
+static int64_t parse_pipeline_argument(struct program *program, int64_t position, struct definition *definition, struct pipeline_definition *pipeline, struct pipeline_argument_definition *arg);
+static int64_t parse_pipeline_worker(struct program *program, int64_t position, struct definition *definition, struct pipeline_definition *pipeline, struct pipeline_worker_definition *worker);
+static int64_t parse_pipeline_output(struct program *program, int64_t position, struct definition *definition, struct pipeline_definition *pipeline, struct pipeline_output_definition *output);
+static int64_t parse_pipeline(struct program *program, int64_t position, struct definition *definition, struct pipeline_definition *pipeline);
+static int64_t parse_pipeline_many(struct program *program, int64_t position, struct definition *definition);
+static int64_t parse_definition(struct program *program, int64_t position);
+static void program_parse(struct program *program);
 
 static int64_t iskey(int chr)
 {
-    return isalpha(chr) || isdigit(chr) || chr == '-' || chr == '_' || chr == '?';
+    return isalpha(chr) || isdigit(chr) || chr == '-' || chr == '_' || chr == '?' || chr == '!' || chr == '[' || chr == ']' || chr == '.';
 }
 
 
@@ -24,6 +37,25 @@ static int64_t skip_until(struct program *program, int64_t position, int symbol)
 {
     while (position < program->source_code_len && program->source_code[position] != symbol) { position++; }
     return position;
+}
+
+
+static void register_definition(struct program *program, struct definition *definition)
+{
+    if (program->definitions_len >= program->definitions_alloc)
+    {
+        program->definitions_alloc = 2 * program->definitions_alloc + !program->definitions_alloc;
+        void *new_ptr = realloc(program->definitions, sizeof(*program->definitions) * program->definitions_alloc);
+        if (new_ptr == NULL)
+        {
+            fprintf(stderr, "Error: No memory for PARSING.\n");
+            exit(1);
+        }
+
+        program->definitions = new_ptr;
+    }
+
+    program->definitions[program->definitions_len++] = definition;
 }
 
 
@@ -51,9 +83,9 @@ static void position_to_line_col(struct program *program, int64_t pos, int64_t *
     while (r - l > 1)
     {
         m = (l + r) / 2;
-        if (program->line_to_position[m] <= pos) 
+        if (program->line_to_position[m] <= pos)
         { l = m; }
-        else 
+        else
         { r = m; }
     }
     *line = l + 1;
@@ -62,6 +94,7 @@ static void position_to_line_col(struct program *program, int64_t pos, int64_t *
 
 static struct log_item *program_log(struct program *program, enum log_source_type source, enum log_level level, char *message, struct code_span code_span, struct log_item *associated_item)
 {
+
     if (program->log.items_len >= program->log.items_alloc)
     {
         program->log.items_alloc = 2 * program->log.items_alloc + !program->log.items_alloc;
@@ -98,7 +131,7 @@ static struct log_item *program_log(struct program *program, enum log_source_typ
     int64_t line, col;
     position_to_line_col(program, code_span.begin, &line, &col);
     printf(":%s:%lld:%lld %s\n", program->filename, line, col, message);
-    
+
     char *s = str_from_code(program, code_span.begin, code_span.end);
     printf("[at <%s>]\n", s);
     free(s);
@@ -111,7 +144,7 @@ static int64_t parse_pipeline_argument(struct program *program, int64_t position
 {
     (void)definition;
     (void)pipeline;
-    
+
     position = skip_spaces(program, position);
 
     int64_t arg_begin = position;
@@ -120,11 +153,15 @@ static int64_t parse_pipeline_argument(struct program *program, int64_t position
     int64_t cnt = 0;
     while (position < program->source_code_len && (
                (
-                program->source_code[position] != ',' && 
+                program->source_code[position] != ',' &&
                 program->source_code[position] != '>'
                ) || cnt != 0))
     {
         cnt += (program->source_code[position] == '(') - (program->source_code[position] == ')');
+        if (cnt < 0)
+        {
+            break;
+        }
         position++;
     }
 
@@ -136,15 +173,40 @@ static int64_t parse_pipeline_argument(struct program *program, int64_t position
         }
         else
         {
-            program_log(program, LOG_PARSER, LOG_ERROR, "Wrong definition syntax. Excepted ',' or '>' after pipeline argument definition", SPAN(arg_begin, position), NULL);            
+            program_log(program, LOG_PARSER, LOG_ERROR, "Wrong definition syntax. Excepted ',' or '>' after pipeline argument definition", SPAN(arg_begin, position), NULL);
         }
         return position;
     }
 
-    arg->code_position = SPAN(arg_begin, position);
+    int64_t arg_end = position;
 
-    /* parse content */
-    // TODO: 
+    while (arg_begin < arg_end && isspace(program->source_code[arg_begin])) { arg_begin++; }
+    while (arg_end > arg_begin && isspace(program->source_code[arg_end - 1])) { arg_end--; }
+
+
+    arg->code_position = SPAN(arg_begin, arg_end);
+
+    if (program->source_code[arg_begin] == '(' && program->source_code[arg_end - 1] == ')')
+    {
+        arg->type = ARGUMENT_PIPELINE;
+        arg->pipeline = malloc(sizeof(*arg->pipeline));
+        parse_pipeline(program, arg_begin + 1, NULL, arg->pipeline);
+    }
+    else
+    {
+        /* check that it is all from keys */
+        for (int i = arg_begin; i < arg_end; ++i)
+        {
+            if (!iskey(program->source_code[i]))
+            {
+                program_log(program, LOG_PARSER, LOG_ERROR, "Wrong definition syntax. Pipeline argument isn't pipeline, but contains invalid characters", SPAN(i, i + 1), NULL);
+                return position;
+            }
+        }
+
+        arg->type = ARGUMENT_NAME;
+        arg->name = str_from_code(program, arg_begin, arg_end);
+    }
 
     return position;
 }
@@ -154,7 +216,7 @@ static int64_t parse_pipeline_worker(struct program *program, int64_t position, 
 {
     (void)definition;
     (void)pipeline;
-    
+
     position = skip_spaces(program, position);
 
     int64_t worker_begin = position;
@@ -163,18 +225,22 @@ static int64_t parse_pipeline_worker(struct program *program, int64_t position, 
     int64_t cnt = 0;
     while (position < program->source_code_len && (
                (
-                program->source_code[position] != '>' && 
-                (program->source_code[position] != '|' || program->source_code[position + 1] != ':') && 
+                program->source_code[position] != '>' &&
+                (program->source_code[position] != '|' || program->source_code[position + 1] != ':') &&
                 program->source_code[position] != ';' &&
                 program->source_code[position] != '}'
                ) || cnt != 0))
     {
         if (program->source_code[position] == '|' && cnt == 0)
         {
-            program_log(program, LOG_PARSER, LOG_ERROR, "Wrong definition syntax. Symbol '|' inside worker definition. Probably forgot to end previous definition", SPAN(position, position + 1), NULL);            
+            program_log(program, LOG_PARSER, LOG_ERROR, "Wrong definition syntax. Symbol '|' inside worker definition. Probably forgot to end previous definition", SPAN(position, position + 1), NULL);
             break;
         }
         cnt += (program->source_code[position] == '(') - (program->source_code[position] == ')');
+        if (cnt < 0)
+        {
+            break;
+        }
         position++;
     }
 
@@ -186,15 +252,91 @@ static int64_t parse_pipeline_worker(struct program *program, int64_t position, 
         }
         else
         {
-            program_log(program, LOG_PARSER, LOG_ERROR, "Wrong definition syntax. Excepted '>' or '|:' or ';' or '}' after pipeline worker definition", SPAN(worker_begin, position), NULL);            
+            program_log(program, LOG_PARSER, LOG_ERROR, "Wrong definition syntax. Excepted '>' or '|:' or ';' or '}' after pipeline worker definition", SPAN(worker_begin, position), NULL);
         }
         return position;
     }
 
-    worker->code_position = SPAN(worker_begin, position);
+    int64_t worker_end = position;
+
+    while (worker_begin < worker_end && isspace(program->source_code[worker_begin])) { worker_begin++; }
+    while (worker_end > worker_begin && isspace(program->source_code[worker_end - 1])) { worker_end--; }
     
-    /* parse content */
-    // TODO: 
+    worker->code_position = SPAN(worker_begin, worker_end);
+
+    /* 1. parse name */
+    int64_t name_end = worker_begin;
+    {
+        while (name_end < worker_end && iskey(program->source_code[name_end])) { name_end++; }
+
+        worker->name = str_from_code(program, worker_begin, name_end);
+    }
+    
+    /* 2. parse replacement table */
+    {
+        worker->subs_len = 0;
+        
+        int64_t i = name_end + 1;
+        while (1)
+        {
+            /* extract group */
+            i = skip_spaces(program, i);
+            if (i >= worker_end)
+            {
+                break;
+            }
+            int64_t begin = i, cnt = 0;
+            while (i < worker_end && (!isspace(program->source_code[i]) || cnt != 0)) 
+            { 
+                cnt += (program->source_code[i] == '(') - (program->source_code[i] == ')');
+                i++; 
+            }
+            int64_t end = i;
+
+            /* parse group */
+            
+            int64_t delim = begin;
+            while (delim < end && program->source_code[delim] != '=') { delim++; }
+
+            /* check that it is all from keys */
+            for (int pos = begin; pos < delim; ++pos)
+            {
+                if (!iskey(program->source_code[pos]))
+                {
+                    program_log(program, LOG_PARSER, LOG_ERROR, "Wrong definition syntax. Substitution contains invalid characters", SPAN(pos, pos + 1), NULL);
+                    return position;
+                }
+            }
+
+            if (program->source_code[delim + 1] == '(' && program->source_code[end - 1] == ')')
+            {
+                worker->subs[worker->subs_len].code_position = SPAN(begin, end);
+                worker->subs[worker->subs_len].type = SUBSTITUTION_PIPELINE;
+                worker->subs[worker->subs_len].name = str_from_code(program, begin, delim);
+                worker->subs[worker->subs_len].pipeline = malloc(sizeof(*worker->subs[worker->subs_len].pipeline));
+                parse_pipeline(program, delim + 2, NULL, worker->subs[worker->subs_len].pipeline);
+                worker->subs_len++;
+            }
+            else
+            {
+                for (int pos = delim + 1; pos < end; ++pos)
+                {
+                    if (!iskey(program->source_code[pos]))
+                    {
+                        program_log(program, LOG_PARSER, LOG_ERROR, "Wrong definition syntax. Substitution is not to pipe, and contains invalid characters", SPAN(pos, pos + 1), NULL);
+                        return position;
+                    }
+                }
+
+                worker->subs[worker->subs_len].code_position = SPAN(begin, end);
+                worker->subs[worker->subs_len].type = SUBSTITUTION_SYMBOL;
+                worker->subs[worker->subs_len].name = str_from_code(program, begin, delim);
+                worker->subs[worker->subs_len].symbol = str_from_code(program, delim + 1, end);
+                worker->subs_len++;
+            }
+        }
+    }
+    
 
     return position;
 }
@@ -204,7 +346,7 @@ static int64_t parse_pipeline_output(struct program *program, int64_t position, 
 {
     (void)definition;
     (void)pipeline;
-    
+
     position = skip_spaces(program, position);
 
     int64_t output_begin = position;
@@ -213,23 +355,27 @@ static int64_t parse_pipeline_output(struct program *program, int64_t position, 
     int64_t cnt = 0;
     while (position < program->source_code_len && (
                (
-                program->source_code[position] != ',' && 
-                (program->source_code[position] != '|' || program->source_code[position + 1] != ':') && 
+                program->source_code[position] != ',' &&
+                (program->source_code[position] != '|' || program->source_code[position + 1] != ':') &&
                 program->source_code[position] != '}' &&
                 program->source_code[position] != ';'
                ) || cnt != 0))
     {
         if (program->source_code[position] == '>' && cnt == 0)
         {
-            program_log(program, LOG_PARSER, LOG_ERROR, "Wrong definition syntax. Symbol '>' inside output definition. Probably forgot comma or semicolon", SPAN(position, position + 1), NULL);            
+            program_log(program, LOG_PARSER, LOG_ERROR, "Wrong definition syntax. Symbol '>' inside output definition. Probably forgot comma or semicolon", SPAN(position, position + 1), NULL);
             break;
         }
         if (program->source_code[position] == '|' && cnt == 0)
         {
-            program_log(program, LOG_PARSER, LOG_ERROR, "Wrong definition syntax. Symbol '|' inside output definition. Probably forgot to end previous definition", SPAN(position, position + 1), NULL);            
+            program_log(program, LOG_PARSER, LOG_ERROR, "Wrong definition syntax. Symbol '|' inside output definition. Probably forgot to end previous definition", SPAN(position, position + 1), NULL);
             break;
         }
         cnt += (program->source_code[position] == '(') - (program->source_code[position] == ')');
+        if (cnt < 0)
+        {
+            break;
+        }
         position++;
     }
 
@@ -241,15 +387,23 @@ static int64_t parse_pipeline_output(struct program *program, int64_t position, 
         }
         else
         {
-            program_log(program, LOG_PARSER, LOG_ERROR, "Wrong definition syntax. Excepted ',' or ';' or '|:' or '}' after pipeline output definition", SPAN(output_begin, position), NULL);            
+            program_log(program, LOG_PARSER, LOG_ERROR, "Wrong definition syntax. Excepted ',' or ';' or '|:' or '}' after pipeline output definition", SPAN(output_begin, position), NULL);
         }
         return position;
     }
 
-    output->code_position = SPAN(output_begin, position);
+    /* check all characters */
+    for (int pos = output_begin; pos < position; ++pos)
+    {
+        if (!iskey(program->source_code[pos]))
+        {
+            program_log(program, LOG_PARSER, LOG_ERROR, "Wrong definition syntax. Output name contains invalid characters", SPAN(pos, pos + 1), NULL);
+            return position;
+        }
+    }
 
-    /* parse content */
-    // TODO:
+    output->code_position = SPAN(output_begin, position);
+    output->name = str_from_code(program, output_begin, position);
 
     return position;
 }
@@ -258,9 +412,9 @@ static int64_t parse_pipeline_output(struct program *program, int64_t position, 
 static int64_t parse_pipeline(struct program *program, int64_t position, struct definition *definition, struct pipeline_definition *pipeline)
 {
     (void)definition;
-    
+
     position = skip_spaces(program, position);
-    
+
     int64_t pipeline_begin = position;
 
     /* read all arguments */
@@ -268,26 +422,26 @@ static int64_t parse_pipeline(struct program *program, int64_t position, struct 
     while (1)
     {
         position = skip_spaces(program, position);
-        
+
         if (program->source_code[position] == '>')
         {
             break;
         }
 
-        position = parse_pipeline_argument(program, position, definition, pipeline, &pipeline->args[pipeline->args_len++]);        
-        
+        position = parse_pipeline_argument(program, position, definition, pipeline, &pipeline->args[pipeline->args_len++]);
+
         position = skip_spaces(program, position);
-        
+
         if (program->source_code[position] == '>')
         {
             break;
-        } 
+        }
         else if (program->source_code[position] == ',')
         {
             position++;
         }
         else
-        {            
+        {
             program_log(program, LOG_PARSER, LOG_ERROR, "Wrong definition syntax. Excepted ',' or '>' after pipeline argument definition", SPAN(position, position + 1), NULL);
             return position;
         }
@@ -299,20 +453,24 @@ static int64_t parse_pipeline(struct program *program, int64_t position, struct 
     while (1)
     {
         position = skip_spaces(program, position);
-        
-        if (program->source_code[position] == '>' && 
+
+        if (program->source_code[position] == '>' &&
             program->source_code[position + 1] == '>')
         {
             position += 2;
             parsing_outputs = 1;
             break;
         }
-        if (program->source_code[position] == '|' && 
+        if (program->source_code[position] == '|' &&
             program->source_code[position + 1] == ':')
         {
             break;
         }
         if (program->source_code[position] == ';')
+        {
+            break;
+        }
+        if (program->source_code[position] == ')')
         {
             break;
         }
@@ -331,7 +489,7 @@ static int64_t parse_pipeline(struct program *program, int64_t position, struct 
             program_log(program, LOG_PARSER, LOG_ERROR, "Wrong definition syntax. Excepted '>' or '>>' or '|:' or ';' or '}' after pipeline worker definition", SPAN(position, position + 1), NULL);
             return position;
         }
-        
+
         position = parse_pipeline_worker(program, position, definition, pipeline, &pipeline->workers[pipeline->workers_len++]);
     }
 
@@ -343,8 +501,8 @@ static int64_t parse_pipeline(struct program *program, int64_t position, struct 
         while (1)
         {
             position = skip_spaces(program, position);
-            
-            if (program->source_code[position] == '|' && 
+
+            if (program->source_code[position] == '|' &&
                 program->source_code[position + 1] == ':')
             {
                 break;
@@ -357,12 +515,12 @@ static int64_t parse_pipeline(struct program *program, int64_t position, struct 
             {
                 break;
             }
-            
+
             position = parse_pipeline_output(program, position, definition, pipeline, &pipeline->outputs[pipeline->outputs_len++]);
-            
+
             position = skip_spaces(program, position);
-            
-            if (program->source_code[position] == '|' && 
+
+            if (program->source_code[position] == '|' &&
                 program->source_code[position + 1] == ':')
             {
                 break;
@@ -372,6 +530,10 @@ static int64_t parse_pipeline(struct program *program, int64_t position, struct 
                 break;
             }
             if (program->source_code[position] == '}')
+            {
+                break;
+            }
+            if (program->source_code[position] == ')')
             {
                 break;
             }
@@ -387,7 +549,7 @@ static int64_t parse_pipeline(struct program *program, int64_t position, struct 
             }
         }
     }
-    
+
     pipeline->code_position = SPAN(pipeline_begin, position);
 
     return position;
@@ -404,6 +566,7 @@ static int64_t parse_pipeline_many(struct program *program, int64_t position, st
     definition->pipelines_len = 0;
     if (program->source_code[position] == '{')
     {
+        position++;
         /* this is pipelines gathering */
         while (1)
         {
@@ -432,7 +595,7 @@ static int64_t parse_pipeline_many(struct program *program, int64_t position, st
     {
         position = parse_pipeline(program, position, definition, &definition->pipelines[definition->pipelines_len++]);
     }
-    
+
     return position;
 }
 
@@ -463,9 +626,9 @@ static int64_t parse_definition(struct program *program, int64_t position)
     definition->name = NULL;
     definition->free_vars_len = 0;
     definition->pipeline_vars_len = 0;
-    
-        
-    definition->position.begin = position;
+
+
+    definition->code_position.begin = position;
 
     int64_t new_position = parse_pipeline_many(program, position, definition);
     if (new_position == position)
@@ -480,7 +643,7 @@ static int64_t parse_definition(struct program *program, int64_t position)
 
     position = skip_spaces(program, position);
 
-    if (program->source_code[position] != '|' || 
+    if (program->source_code[position] != '|' ||
         program->source_code[position + 1] != ':')
     {
         program_log(program, LOG_PARSER, LOG_ERROR, "Wrong definition syntax. Expected '|:' after pipeline", SPAN(position, position + 2), NULL);
@@ -493,7 +656,7 @@ static int64_t parse_definition(struct program *program, int64_t position)
     }
 
     position = skip_spaces(program, position);
-    
+
     /* read definition name */
     {
         int64_t start = position;
@@ -501,7 +664,7 @@ static int64_t parse_definition(struct program *program, int64_t position)
 
         definition->name = str_from_code(program, start, position);
     }
-    
+
     position = skip_spaces(program, position);
 
 
@@ -522,7 +685,7 @@ static int64_t parse_definition(struct program *program, int64_t position)
             while (i < position)
             {
                 i = skip_spaces(program, i);
-                            
+
                 int64_t name_start = i;
                 while (iskey(program->source_code[i])) { i++; }
                 int64_t name_end = i;
@@ -541,7 +704,7 @@ static int64_t parse_definition(struct program *program, int64_t position)
                 }
 
                 i = skip_spaces(program, i);
-                
+
                 if (i >= position)
                 {
                     break;
@@ -560,14 +723,14 @@ static int64_t parse_definition(struct program *program, int64_t position)
             position++;
         }
     }
-    
+
     /* read free variables */
-    if (program->source_code[position] == '[')
+    if (program->source_code[position] == '{')
     {
         int64_t start = skip_spaces(program, position + 1);
 
-        position = skip_until(program, position, ']');
-        if (program->source_code[position] != ']')
+        position = skip_until(program, position, '}');
+        if (program->source_code[position] != '}')
         {
             program_log(program, LOG_PARSER, LOG_ERROR, "Wrong definition syntax. Expected closing ')' to match this one", SPAN(start - 1, start), NULL);
         }
@@ -578,7 +741,7 @@ static int64_t parse_definition(struct program *program, int64_t position)
             while (i < position)
             {
                 i = skip_spaces(program, i);
-                
+
                 int64_t name_start = i;
                 while (iskey(program->source_code[i])) { i++; }
                 int64_t name_end = i;
@@ -597,7 +760,7 @@ static int64_t parse_definition(struct program *program, int64_t position)
                 }
 
                 i = skip_spaces(program, i);
-                
+
                 if (i >= position)
                 {
                     break;
@@ -616,8 +779,10 @@ static int64_t parse_definition(struct program *program, int64_t position)
             position++;
         }
     }
+
+    definition->code_position.end = position;
     
-    definition->position.end = position;    
+    register_definition(program, definition);
 
     return position;
 }
@@ -642,7 +807,11 @@ struct program *program_create_from_code(char *filename, char *code)
     program->log.items = NULL;
     program->log.items_len = 0;
     program->log.items_alloc = 0;
-    
+
+    program->definitions = NULL;
+    program->definitions_len = 0;
+    program->definitions_alloc = 0;
+
     program->filename = filename;
     program->source_code_len = strlen(code);
     program->source_code = code;
@@ -665,6 +834,8 @@ struct program *program_create_from_code(char *filename, char *code)
 
     /* parse file content */
     program_parse(program);
-    
+
+    program_ast_dump(stdout, program);
+
     return program;
 }

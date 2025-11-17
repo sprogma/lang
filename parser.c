@@ -42,4 +42,5 @@ int main(int argc, char **argv)
     }
 
     struct program *program = program_create_from_code(argv[1], code);
+    (void)program;
 }

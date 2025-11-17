@@ -3,6 +3,8 @@
 
 
 #include "inttypes.h"
+#include "stdio.h"
+
 
 enum log_source_type
 {
@@ -93,11 +95,25 @@ struct pipeline_argument_definition
 };
 
 
+enum pipeline_worker_substitution_type
+{
+    SUBSTITUTION_SYMBOL,
+    SUBSTITUTION_PIPELINE,
+};
+
+
 struct pipeline_worker_substitution
 {
-    char *name;
-    char *symbol;
     struct code_span code_position;
+    
+    char *name;
+    
+    enum pipeline_worker_substitution_type type;
+
+    union{
+        char *symbol;
+        struct pipeline_definition *pipeline;
+    };
 };
 
 
@@ -134,7 +150,7 @@ struct pipeline_definition
 struct definition
 {
     char *name;
-    struct code_span position;
+    struct code_span code_position;
     
     char *free_vars[MAX_FREE_VARS];
     int64_t free_vars_len;
@@ -155,10 +171,15 @@ struct program
     int64_t code_lines;
     
     struct compilation_log log;
+
+    struct definition **definitions;
+    int64_t definitions_len;
+    int64_t definitions_alloc;
 };
 
 
 struct program *program_create_from_code(char *filename, char *code);
+void program_ast_dump(FILE *stream, struct program *program);
 
 
 #endif
