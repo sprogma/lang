@@ -6,8 +6,8 @@
 #include "string.h"
 #include "inttypes.h"
 
-#define MAX_FUNCTION_PIPES 128
-#define MAX_FUNCTION_WORKERS 512
+#define MAX_FUNCTION_PIPES 4096
+#define MAX_FUNCTION_WORKERS 1024
 struct name_table
 {
     struct pipe *pipes[MAX_FUNCTION_PIPES];
@@ -16,6 +16,7 @@ struct name_table
     struct worker *workers[MAX_FUNCTION_WORKERS];
     int64_t workers_len;
 };
+
 
 static struct pipe *add_pipe(struct program *program, char *name, struct code_span code_position)
 {
@@ -43,6 +44,42 @@ static struct pipe *add_pipe(struct program *program, char *name, struct code_sp
     workflow->pipes[workflow->pipes_len]->code_position = code_position;
     
     return workflow->pipes[workflow->pipes_len++];
+}
+
+
+static struct pipe *get_pipe(struct program *program, struct name_table *name_table, char *name, struct code_span span)
+{    
+    int i = 0;
+    for (; name[i] != '\0'; ++i)
+    {
+        if (!isdigit(name[i]))
+        {
+            break;
+        }
+    }
+    if (name[i] == '\0')
+    {
+        /* this is number */
+        struct pipe *pipe = add_pipe(program, "numeric pipeline", span);
+        name_table->pipes[name_table->pipes_len++] = pipe;
+        return pipe;
+    }
+
+    int a = 0;
+    for (; a < name_table->pipes_len; ++a)
+    {
+        if (strcmp(name_table->pipes[a]->name, name) == 0)
+        {
+            return name_table->pipes[a];
+        }
+    }
+
+    if (a == name_table->pipes_len)
+    {
+        program_log(program, LOG_WORKFLOW, LOG_ERROR, "Wrong name of pipe: this pipeline name doesn't exists", span, NULL);
+    }
+    
+    return NULL;
 }
 
 
@@ -77,12 +114,68 @@ static struct worker *add_worker(struct program *program, struct pipeline_worker
     return workflow->workers[workflow->workers_len++];
 }
 
-static void update_using_pure_definition(struct program *program, struct definition *definition)
+static void build_pipeline(struct program *program, struct name_table *name_table, struct definition *definition, struct pipeline_definition *pipeline)
 {
     struct workflow *workflow = &program->workflow;
+    (void)workflow;
+    
+    /* add pipe's name */
+    struct worker *worker, *prev_worker;
+    for (int64_t j = 0; j < pipeline->workers_len; ++j)
+    {
+        name_table->workers[name_table->workers_len++] = worker = add_worker(program, &pipeline->workers[j]);
+        /* add connection */
+        if (j == 0)
+        {
+            for (int k = 0; k < pipeline->args_len; ++k)
+            {
+                if (pipeline->args[k].type == ARGUMENT_NAME)
+                {
+                    /* find pipeline by name */
+                    struct pipe *pipe = get_pipe(program, name_table, pipeline->args[k].name, pipeline->args[k].code_position);
+                    if (pipe != NULL)
+                    {
+                        worker->inputs[worker->inputs_len++] = pipe;
+                    }
+                }
+                else
+                {
+                    /* build this pipeline? */
+                    if (pipeline->args[k].pipeline->outputs_len != 0)
+                    {
+                        program_log(program, LOG_WORKFLOW, LOG_ERROR, "Unsopported for now: inline pipelines, with output pipes", pipeline->args[k].pipeline->code_position, NULL);
+                    }
+                    build_pipeline(program, name_table, definition, pipeline->args[k].pipeline);
+                }
+            }
+        }
+        else
+        {
+            worker->inputs[worker->inputs_len++] = prev_worker->outputs[prev_worker->outputs_len++] = add_pipe(program, "implict pipe", SPAN(prev_worker->code_position.end, worker->code_position.begin));
+        }
+        prev_worker = worker;
+    }
+    /* add pipes to all outputs */
+    for (int k = 0; k < pipeline->outputs_len; ++k)
+    {
+        /* find pipeline by name */
+        struct pipe *pipe = get_pipe(program, name_table, pipeline->outputs[k].name, pipeline->outputs[k].code_position);
+        if (pipe != NULL)
+        {
+            worker->outputs[worker->outputs_len++] = pipe;
+        }
+    }
+}
+
+static void update_using_pure_definition(struct program *program, struct definition *definition)
+{
+
+    struct workflow *workflow = &program->workflow;
     struct name_table name_table;
+    (void)workflow;
 
     name_table.pipes_len = 0;
+    name_table.workers_len = 0;
 
     /* 1. create all pipelines output pipes */
     for (int64_t i = 0; i < definition->pipelines_len; ++i)
@@ -99,22 +192,7 @@ static void update_using_pure_definition(struct program *program, struct definit
     /* connect all workers using pipes */
     for (int64_t i = 0; i < definition->pipelines_len; ++i)
     {
-        /* add pipe's name */
-        struct worker *worker, *prev_worker;
-        for (int64_t j = 0; j < definition->pipelines[i].workers_len; ++j)
-        {
-            name_table.workers[name_table.workers_len++] = worker = add_worker(program, &definition->pipelines[i].workers[j]);
-            /* add connection */
-            if (j == 0)
-            {
-                worker->inputs[worker->inputs_len++] = 
-            }
-            else
-            {
-                worker->inputs[worker->inputs_len++] = prev_worker->outputs[prev_worker->outputs_len++] = add_pipe(program, "implict pipe", SPAN(prev_worker->code_position.end, worker->code_position.begin));
-            }
-            prev_worker = worker;
-        }
+        build_pipeline(program, &name_table, definition, &definition->pipelines[i]);
     }
     printf("\n\nadd %lld pipes\n", name_table.pipes_len);
     for (int i = 0; i < name_table.pipes_len; ++i)
@@ -125,6 +203,18 @@ static void update_using_pure_definition(struct program *program, struct definit
     for (int i = 0; i < name_table.workers_len; ++i)
     {
         printf("worker %d: %s\n", i, name_table.workers[i]->name);
+        printf("inputs: ");
+        for (int a = 0; a < name_table.workers[i]->inputs_len; ++a)
+        {
+            printf("%s ", name_table.workers[i]->inputs[a]->name);
+        }
+        printf("\n");
+        printf("outputs: ");
+        for (int a = 0; a < name_table.workers[i]->outputs_len; ++a)
+        {
+            printf("%s ", name_table.workers[i]->outputs[a]->name);
+        }
+        printf("\n");
     }
 }
 
