@@ -10,8 +10,8 @@ x > !str_iter > !foreach f=to_int_one |: to_int(x)
 
 
 {
-    !read > to_int >> a;
-    !read > to_int >> b;
+    > !read > to_int >> a;
+    > !read > to_int >> b;
     ((1, 1000 > range) > check a=a[0] b=b[0] > reduce f=!sum), 1000 > div > !print
 } |: main
 

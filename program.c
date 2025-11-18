@@ -10,7 +10,6 @@ static int64_t iskey(int chr);
 static int64_t skip_spaces(struct program *program, int64_t position);
 static int64_t skip_until(struct program *program, int64_t position, int symbol);
 static char *str_from_code(struct program *program, int64_t begin, int64_t end);
-static void position_to_line_col(struct program *program, int64_t pos, int64_t *line, int64_t *col);
 static struct log_item *program_log(struct program *program, enum log_source_type source, enum log_level level, char *message, struct code_span code_span, struct log_item *associated_item);
 static int64_t parse_pipeline_argument(struct program *program, int64_t position, struct definition *definition, struct pipeline_definition *pipeline, struct pipeline_argument_definition *arg);
 static int64_t parse_pipeline_worker(struct program *program, int64_t position, struct definition *definition, struct pipeline_definition *pipeline, struct pipeline_worker_definition *worker);
@@ -75,68 +74,6 @@ static char *str_from_code(struct program *program, int64_t begin, int64_t end)
     memcpy(res, program->source_code + begin, end - begin);
     res[end - begin] = 0;
     return res;
-}
-
-static void position_to_line_col(struct program *program, int64_t pos, int64_t *line, int64_t *col)
-{
-    int64_t l = 0, r = program->code_lines, m = 0;
-    while (r - l > 1)
-    {
-        m = (l + r) / 2;
-        if (program->line_to_position[m] <= pos)
-        { l = m; }
-        else
-        { r = m; }
-    }
-    *line = l + 1;
-    *col = pos - program->line_to_position[l];
-}
-
-static struct log_item *program_log(struct program *program, enum log_source_type source, enum log_level level, char *message, struct code_span code_span, struct log_item *associated_item)
-{
-
-    if (program->log.items_len >= program->log.items_alloc)
-    {
-        program->log.items_alloc = 2 * program->log.items_alloc + !program->log.items_alloc;
-        void *new_ptr = realloc(program->log.items, sizeof(*program->log.items) * program->log.items_alloc);
-        if (new_ptr == NULL)
-        {
-            fprintf(stderr, "Error: No memory for PARSING.\n");
-            exit(1);
-        }
-
-        program->log.items = new_ptr;
-    }
-
-    program->log.items[program->log.items_len++] = (struct log_item){
-        .source = source,
-        .level = level,
-        .message = message,
-        .code_span = code_span,
-        .associated_item = associated_item,
-    };
-
-    switch (source)
-    {
-        case LOG_PARSER:
-            printf("PARSER::");
-    }
-    switch (level)
-    {
-        case LOG_INFO: printf("INFO");
-        case LOG_NOTE: printf("NOTE");
-        case LOG_WARNING: printf("WARNING");
-        case LOG_ERROR: printf("ERROR");
-    }
-    int64_t line, col;
-    position_to_line_col(program, code_span.begin, &line, &col);
-    printf(":%s:%lld:%lld %s\n", program->filename, line, col, message);
-
-    char *s = str_from_code(program, code_span.begin, code_span.end);
-    printf("[at <%s>]\n", s);
-    free(s);
-
-    return &program->log.items[program->log.items_len - 1];
 }
 
 
@@ -835,7 +772,11 @@ struct program *program_create_from_code(char *filename, char *code)
     /* parse file content */
     program_parse(program);
 
+    /* print program */
     program_ast_dump(stdout, program);
+
+    /* get full workflow */
+    program_get_workflow(program);
 
     return program;
 }

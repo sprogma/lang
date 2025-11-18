@@ -9,6 +9,7 @@
 enum log_source_type
 {
     LOG_PARSER,
+    LOG_WORKFLOW,
 };
 
 enum log_level
@@ -43,28 +44,6 @@ struct compilation_log
     struct log_item *items;
     int64_t items_len;
     int64_t items_alloc;
-};
-
-
-#define MAX_PIPELINE_INPUT 16
-#define MAX_PIPELINE_OUTPUT 16
-
-
-struct worker
-{
-    struct pipe *inputs[MAX_PIPELINE_INPUT];
-    int64_t inputs_len;
-    struct pipe *outputs[MAX_PIPELINE_OUTPUT];
-    int64_t outputs_len;
-    char *name;
-    struct code_span code_position;
-};
-
-
-struct pipe
-{
-    char *name;
-    struct code_span code_position;
 };
 
 
@@ -162,6 +141,44 @@ struct definition
 };
 
 
+#define MAX_PIPELINE_INPUT 16
+#define MAX_PIPELINE_OUTPUT 16
+
+
+struct worker
+{
+    struct pipe *inputs[MAX_PIPELINE_INPUT];
+    int64_t inputs_len;
+    
+    struct pipe *outputs[MAX_PIPELINE_OUTPUT];
+    int64_t outputs_len;
+    
+    char *name;
+    struct code_span code_position;
+
+    struct pipeline_worker_definition *worker_definition;
+};
+
+
+struct pipe
+{
+    char *name;
+    struct code_span code_position;
+};
+
+
+struct workflow
+{
+    struct worker **workers;
+    int64_t workers_len;
+    int64_t workers_alloc;
+    
+    struct pipe **pipes;
+    int64_t pipes_len;
+    int64_t pipes_alloc;
+};
+
+
 struct program
 {
     char *filename;
@@ -175,11 +192,15 @@ struct program
     struct definition **definitions;
     int64_t definitions_len;
     int64_t definitions_alloc;
+
+    struct workflow workflow;
 };
 
 
+struct log_item *program_log(struct program *program, enum log_source_type source, enum log_level level, char *message, struct code_span code_span, struct log_item *associated_item);
 struct program *program_create_from_code(char *filename, char *code);
 void program_ast_dump(FILE *stream, struct program *program);
+void program_get_workflow(struct program *program);
 
 
 #endif
